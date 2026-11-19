@@ -31,10 +31,12 @@ from .database import (
     insert_publication,
 )
 from .solver import evaluate
+from .wire import INT64_MAX, to_wire
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SAMPLE_CSV = BASE_DIR / "sample_survey.csv"
+SAMPLE_BIG_CSV = BASE_DIR / "sample_survey_big.csv"
 
 MAX_CELLS = 16
 MIN_POPULATION = 5
@@ -100,8 +102,16 @@ def parse_survey_csv(text: str) -> list[dict]:
             raise ValueError(f"第 {lineno} 行检出数不是整数：{det_s!r}")
         if pop < MIN_POPULATION:
             raise ValueError(f"第 {lineno} 行人数 {pop} 小于下限 {MIN_POPULATION}")
+        if pop > INT64_MAX:
+            raise ValueError(
+                f"第 {lineno} 行人数 {pop} 超过有符号 64 位整数上限 {INT64_MAX}"
+            )
         if not (0 <= det <= pop):
             raise ValueError(f"第 {lineno} 行检出数 {det} 不在 0~人数({pop}) 范围内")
+        if det > INT64_MAX:
+            raise ValueError(
+                f"第 {lineno} 行检出数 {det} 超过有符号 64 位整数上限 {INT64_MAX}"
+            )
         key = (district, age)
         if key in seen:
             raise ValueError(f"组合重复：{district} / {age}")
@@ -161,6 +171,12 @@ def sample_csv():
     return FileResponse(SAMPLE_CSV, media_type="text/csv")
 
 
+@app.get("/sample_survey_big.csv", include_in_schema=False)
+def sample_big_csv():
+    # 大整数示例：单格计数在有符号 64 位内，合计超出 64 位与 JS 安全整数上限。
+    return FileResponse(SAMPLE_BIG_CSV, media_type="text/csv")
+
+
 # ---------------- 接口 ----------------
 
 
@@ -182,23 +198,23 @@ async def import_csv(file: UploadFile = File(...)):
     except sqlite3.IntegrityError:
         # 并发导入或组合冲突：整体回滚，先到先得。
         raise HTTPException(409, "调查数据已导入，不可更换")
-    return {
+    return to_wire({
         "imported": len(rows),
         "districts": sorted({r["district"] for r in rows}),
         "age_groups": sorted({r["age_group"] for r in rows}),
-    }
+    })
 
 
 @app.get("/api/admin/state")
 def admin_state():
     cells = get_cells()
-    return {
+    return to_wire({
         "imported": bool(cells),
         "districts": sorted({c["district"] for c in cells}),
         "age_groups": sorted({c["age_group"] for c in cells}),
         "cells": cells,  # 内部台可见原始检出数
         "publications": get_publications(),
-    }
+    })
 
 
 @app.post("/api/preview")
@@ -214,7 +230,7 @@ async def preview(sel: Selection):
     }
     # 求解放入工作线程，求解期间公开页与其他请求不受影响。
     result = await asyncio.to_thread(evaluate, cells, get_publications(), candidate)
-    return {"total": total, "cells_matched": len(matched), **result}
+    return to_wire({"total": total, "cells_matched": len(matched), **result})
 
 
 @app.post("/api/publish", status_code=201)
@@ -235,24 +251,24 @@ async def publish(sel: Selection):
         if not result["safe"]:
             raise HTTPException(
                 status_code=409,
-                detail={
+                detail=to_wire({
                     "message": "按最新公开记录重核未通过：可能暴露小样本格值，已拒绝发布",
                     "affected": result["affected"],
-                },
+                }),
             )
         try:
             pub = insert_publication(sel.districts, sel.age_groups, total)
         except Exception:
             # 单事务写入，失败即回滚，不会留下半次发布。
             raise HTTPException(500, "保存失败，未产生任何发布记录")
-    return pub
+    return to_wire(pub)
 
 
 @app.get("/api/public")
 def public_data():
     """公开数据：仅人数与获准汇总，绝不包含格内检出数。"""
     cells = get_cells()
-    return {
+    return to_wire({
         "imported": bool(cells),
         "cells": [
             {
@@ -263,4 +279,4 @@ def public_data():
             for c in cells
         ],
         "publications": get_publications(),
-    }
+    })

@@ -38,6 +38,7 @@
     <input type="file" id="file" accept=".csv">
     <button onclick="doImport()">导入 CSV</button>
     <button class="secondary" onclick="importSample()">导入示例数据</button>
+    <button class="secondary" onclick="importBigSample()">导入大整数示例（合计超 64 位）</button>
     <div id="importMsg" class="msg"></div>
   </section>
 
@@ -72,10 +73,12 @@ async function api(path, opts){
   return body;
 }
 function esc(s){return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// 计数可能超过 JS 安全整数：API 对超大值返回十进制字符串，这里统一按字符串精确渲染，绝不走 Number 解析。
+function fmtNum(v){return esc(v);}
 function fmtAffected(affected){
   let t = '';
   for(const a of (affected || [])){
-    t += `\n· ${a.district} / ${a.age_group}：可行范围 [${a.min}, ${a.max}]，`
+    t += `\n· ${a.district} / ${a.age_group}：可行范围 [${fmtNum(a.min)}, ${fmtNum(a.max)}]，`
        + (a.zero_feasible ? '可取 0' : '不可取 0') + '，'
        + (a.ge5_feasible ? '可取 ≥5' : '不可取 ≥5');
   }
@@ -106,7 +109,7 @@ function render(){
 
   let h = '<table><tr><th>分区</th><th>年龄组</th><th>人数</th><th>检出数</th></tr>';
   for(const c of state.cells)
-    h += `<tr><td>${esc(c.district)}</td><td>${esc(c.age_group)}</td><td>${c.population}</td><td>${c.detected}</td></tr>`;
+    h += `<tr><td>${esc(c.district)}</td><td>${esc(c.age_group)}</td><td>${fmtNum(c.population)}</td><td>${fmtNum(c.detected)}</td></tr>`;
   document.getElementById('grid').innerHTML = h + '</table>';
 
   document.getElementById('dChecks').innerHTML = '<b>分区：</b>'
@@ -117,7 +120,7 @@ function render(){
   const pubs = state.publications;
   document.getElementById('pubs').innerHTML = pubs.length
     ? '<table><tr><th>#</th><th>分区</th><th>年龄组</th><th>检出总数</th><th>发布时间 (UTC)</th></tr>'
-      + pubs.map(p => `<tr><td>${p.id}</td><td>${esc(p.districts.join('、'))}</td><td>${esc(p.age_groups.join('、'))}</td><td>${p.total}</td><td>${esc(p.created_at)}</td></tr>`).join('')
+      + pubs.map(p => `<tr><td>${fmtNum(p.id)}</td><td>${esc(p.districts.join('、'))}</td><td>${esc(p.age_groups.join('、'))}</td><td>${fmtNum(p.total)}</td><td>${esc(p.created_at)}</td></tr>`).join('')
       + '</table>'
     : '<p class="hint">暂无公开记录</p>';
 }
@@ -153,16 +156,28 @@ async function importSample(){
     await load();
   }catch(e){ showErr(el, e); }
 }
+async function importBigSample(){
+  const el = document.getElementById('importMsg');
+  try{
+    const t = await (await fetch('/sample_survey_big.csv')).text();
+    const fd = new FormData();
+    fd.append('file', new Blob([t], {type: 'text/csv'}), 'sample_survey_big.csv');
+    const r = await api('/api/import', {method: 'POST', body: fd});
+    el.className = 'msg ok';
+    el.textContent = `已导入大整数示例 ${r.imported} 格：单格计数在有符号 64 位内，多格合计超出 64 位与 JS 安全整数上限，此后不可更换。`;
+    await load();
+  }catch(e){ showErr(el, e); }
+}
 async function doPreview(){
   const el = document.getElementById('prevMsg');
   try{
     const r = await api('/api/preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(selection())});
     if(r.safe){
       el.className = 'msg ok';
-      el.textContent = `交集检出总数：${r.total}（${r.cells_matched} 格）\n安全审查通过：所有原检出数 1~4 的格仍保留取 0 及 ≥5 的可行解。`;
+      el.textContent = `交集检出总数：${fmtNum(r.total)}（${fmtNum(r.cells_matched)} 格）\n安全审查通过：所有原检出数 1~4 的格仍保留取 0 及 ≥5 的可行解。`;
     }else{
       el.className = 'msg err';
-      el.textContent = `交集检出总数：${r.total}（${r.cells_matched} 格）\n安全审查未通过，发布将被拒绝。受影响格：` + fmtAffected(r.affected);
+      el.textContent = `交集检出总数：${fmtNum(r.total)}（${fmtNum(r.cells_matched)} 格）\n安全审查未通过，发布将被拒绝。受影响格：` + fmtAffected(r.affected);
     }
   }catch(e){ showErr(el, e); }
 }
@@ -172,7 +187,7 @@ async function doPublish(){
   try{
     const r = await api('/api/publish', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(selection())});
     el.className = 'msg ok';
-    el.textContent = `已发布 #${r.id}：检出总数 ${r.total}（${esc(r.created_at)}）`;
+    el.textContent = `已发布 #${fmtNum(r.id)}：检出总数 ${fmtNum(r.total)}（${esc(r.created_at)}）`;
     await load();
   }catch(e){ showErr(el, e); }
 }

@@ -20,6 +20,18 @@ SMALL_MIN, SMALL_MAX = 1, 4   # 受保护的小样本检出数区间
 SAFE_LOW, SAFE_HIGH = 0, 5    # 须同时保留 "取0" 与 "至少5" 的可行解
 
 
+def _z3_int(ref) -> int:
+    """把 z3 有理整数值转为 Python 任意精度 int。
+
+    优先 as_string() 十进制解析：不依赖宿主 long 宽度，
+    超出有符号 64 位的可行域端点也能精确取得；as_long() 作为回退。
+    """
+    try:
+        return int(ref.as_string())
+    except (AttributeError, ValueError):
+        return int(ref.as_long())
+
+
 def _indices(cells: list[dict], selection: dict) -> list[int]:
     ds = set(selection["districts"])
     ags = set(selection["age_groups"])
@@ -35,13 +47,13 @@ def _feasible_range(ctx: Context, constraints, x) -> tuple[int | None, int | Non
     h = opt.minimize(x)
     if opt.check() != sat:
         return None, None
-    lo = opt.lower(h).as_long()
+    lo = _z3_int(opt.lower(h))
     opt2 = Optimize(ctx=ctx)
     opt2.add(constraints)
     h2 = opt2.maximize(x)
     if opt2.check() != sat:
         return lo, None
-    hi = opt2.upper(h2).as_long()
+    hi = _z3_int(opt2.upper(h2))
     return lo, hi
 
 
